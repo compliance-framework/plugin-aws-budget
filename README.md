@@ -15,16 +15,36 @@ To authenticate this plugin, you must provide AWS credentials in one of the foll
 
 ## Configuration
 
+Configuration must contain an AWS account ID. Additionally, role credentials can be passed through the configuration, otherwise they will attempt to be found from the environment. Optionally, you can also define a role ARN to assume which will be used to retrieve the relevant budget data.
+
 ```yaml
 plugins:
   aws_budget:
-    # Token for user with access to costs & billing API
-    access-key-id: ""
-    secret-access-key: ""
-    # additionaly define a session-token for an assumed role:
-    session-token: ""
     # ID of the AWS Account that you want to check budgets for
     account-id: 123456789012
+    # (Optional) Federated credentials to use
+    access-key-id: "..."
+    secret-access-key: "..."
+    session-token: "..."
+    # (Optional) Role to assume for retrieving budgets data
+    assume-role-arn: "arn:aws:iam::123456789012:role/example-role"
+```
+
+If a role is defined, it must have the following policy statement as a minimum:
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AWSBudgetsPermissions",
+            "Effect": "Allow",
+            "Action": [
+                "budgets:ViewBudget"
+            ],
+            "Resource": "arn:aws:budgets::<account-id>:budget/*"
+        }
+    ]
+}
 ```
 
 ## Integration testing

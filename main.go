@@ -11,8 +11,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/budgets"
 	"github.com/aws/aws-sdk-go-v2/service/budgets/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	policyManager "github.com/compliance-framework/agent/policy-manager"
 	"github.com/compliance-framework/agent/runner"
 	"github.com/compliance-framework/agent/runner/proto"
@@ -35,6 +37,11 @@ type Validator interface {
 
 type PluginConfig struct {
 	AccountId string `mapstructure:"account_id"`
+	AwsAccessKeyId string `mapstructure:"aws_access_key_id"`
+	AwsSecretAccessKey string `mapstructure:"aws_secret_access_key"`
+	AwsSessionToken string `mapstructure:"aws_session_token"`
+	AssumeRoleArn string `mapstructure:"assume_role_arn"`
+
 }
 
 func (c *PluginConfig) Validate() error {
@@ -42,6 +49,53 @@ func (c *PluginConfig) Validate() error {
 		return fmt.Errorf("account_id is required")
 	}
 	return nil
+}
+
+// TODO: move to shared lib
+func loadAWSConfig(ctx context.Context, pluginConfig *PluginConfig) (*aws.Config, error) {
+	var awsConfig aws.Config
+	var err error
+	
+	if pluginConfig.AwsAccessKeyId != "" && pluginConfig.AwsSecretAccessKey != "" && pluginConfig.AwsSessionToken != "" {
+		// Use credentials if in config
+		creds := aws.NewCredentialsCache(
+		credentials.NewStaticCredentialsProvider(
+			pluginConfig.AwsAccessKeyId,
+			pluginConfig.AwsSecretAccessKey,
+			pluginConfig.AwsSessionToken,
+			),
+		)
+		awsConfig, err = config.LoadDefaultConfig(ctx, config.WithRegion(os.Getenv("AWS_REGION")), config.WithCredentialsProvider(creds))
+	} else {
+		// Otherwise resort to env
+		awsConfig, err = config.LoadDefaultConfig(ctx, config.WithRegion(os.Getenv("AWS_REGION")))
+	}
+	if err != nil {
+		return nil, err
+	}
+	if pluginConfig.AssumeRoleArn == "" {
+		return &awsConfig, nil
+	}
+
+	// If given a role to assume, assume it
+	stsClient := sts.NewFromConfig(awsConfig)
+	sessionName := "plugin-aws-budget"
+	assumeRoleOutput, err := stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{RoleArn: &pluginConfig.AssumeRoleArn, RoleSessionName: &sessionName})
+	if err != nil {
+		return nil, err
+	}
+	creds := aws.NewCredentialsCache(
+		credentials.NewStaticCredentialsProvider(
+			*assumeRoleOutput.Credentials.AccessKeyId,
+			*assumeRoleOutput.Credentials.SecretAccessKey,
+			*assumeRoleOutput.Credentials.SessionToken,
+		),
+	)
+	awsConfig, err = config.LoadDefaultConfig(ctx, config.WithRegion(os.Getenv("AWS_REGION")), config.WithCredentialsProvider(creds))
+	if err != nil {
+		return nil, err
+	}
+	return &awsConfig, nil
 }
 
 
@@ -59,14 +113,14 @@ func (l *AWSBudgetPlugin) Configure(req *proto.ConfigureRequest) (*proto.Configu
 		return nil, err
 	}
 
-	awsConfig, err := config.LoadDefaultConfig(ctx, config.WithRegion(os.Getenv("AWS_REGION")))
+	awsConfig, err := loadAWSConfig(ctx, pluginConfig)
 	if err != nil {
-		l.Logger.Error("unable to load SDK config", "error", err)
+		l.Logger.Error("Error loading AWS config!", "error", err)
 		return nil, err
 	}
 
 	l.config = pluginConfig
-	l.awsBudgetClient = budgets.NewFromConfig(awsConfig)
+	l.awsBudgetClient = budgets.NewFromConfig(*awsConfig)
 	return &proto.ConfigureResponse{}, nil
 }
 
@@ -222,6 +276,7 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 				activities,
 			)
 			evidence, err := processor.GenerateResults(ctx, policyPath, budgetMap)
+			l.Logger.Info(fmt.Sprintf("evidence: %v", evidence))
 			evidences = slices.Concat(evidences, evidence)
 			if err != nil {
 				accumulatedErrors = errors.Join(accumulatedErrors, err)
