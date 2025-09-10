@@ -18,19 +18,59 @@ import (
 	"github.com/compliance-framework/agent/runner/proto"
 	"github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
+	"github.com/mitchellh/mapstructure"
 )
 
-type CompliancePlugin struct {
-	logger hclog.Logger
-	config map[string]string
+type AWSBudgetPlugin struct {
+	Logger hclog.Logger
+
+	config *PluginConfig
+	awsBudgetClient *budgets.Client
 }
 
-func (l *CompliancePlugin) Configure(req *proto.ConfigureRequest) (*proto.ConfigureResponse, error) {
-	l.config = req.GetConfig()
+type Validator interface {
+	Validate() error
+}
+
+
+type PluginConfig struct {
+	AccountId string `mapstructure:"account_id"`
+}
+
+func (c *PluginConfig) Validate() error {
+	if c.AccountId == "" {
+		return fmt.Errorf("account_id is required")
+	}
+	return nil
+}
+
+
+func (l *AWSBudgetPlugin) Configure(req *proto.ConfigureRequest) (*proto.ConfigureResponse, error) {
+	l.Logger.Info("Configuring AWS Budget Plugin")
+	pluginConfig := &PluginConfig{}
+	ctx := context.TODO()
+
+	if err := mapstructure.Decode(req.Config, pluginConfig); err != nil {
+		l.Logger.Error("Error decoding config", "error", err)
+		return nil, err
+	}
+	if err := pluginConfig.Validate(); err != nil {
+		l.Logger.Error("Error validating config", "error", err)
+		return nil, err
+	}
+
+	awsConfig, err := config.LoadDefaultConfig(ctx, config.WithRegion(os.Getenv("AWS_REGION")))
+	if err != nil {
+		l.Logger.Error("unable to load SDK config", "error", err)
+		return nil, err
+	}
+
+	l.config = pluginConfig
+	l.awsBudgetClient = budgets.NewFromConfig(awsConfig)
 	return &proto.ConfigureResponse{}, nil
 }
 
-func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiHelper) (*proto.EvalResponse, error) {
+func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiHelper) (*proto.EvalResponse, error) {
 	ctx := context.TODO()
 	evalStatus := proto.ExecutionStatus_SUCCESS
 	var accumulatedErrors error
@@ -55,23 +95,10 @@ func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.Api
 		},
 	})
 
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(os.Getenv("AWS_REGION")))
-	if err != nil {
-		l.logger.Error("unable to load SDK config", "error", err)
-		evalStatus = proto.ExecutionStatus_FAILURE
-		accumulatedErrors = errors.Join(accumulatedErrors, err)
-	}
-
-	budgetsClient := budgets.NewFromConfig(cfg)
-
-	accountId := l.config["account_id"]
-
-
-
 	// Run policy checks
-	for budget, err := range getBudgets(ctx, budgetsClient, &accountId) {
+	for budget, err := range getBudgets(ctx, l.awsBudgetClient, &l.config.AccountId) {
 		if err != nil {
-			l.logger.Error("unable to get budget", "error", err)
+			l.Logger.Error("unable to get budget", "error", err)
 			evalStatus = proto.ExecutionStatus_FAILURE
 			accumulatedErrors = errors.Join(accumulatedErrors, err)
 			break
@@ -79,9 +106,9 @@ func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.Api
 
 		alertCount := 0
 
-		for _, err := range getNotificationsForBudget(ctx, budgetsClient, &accountId, budget.BudgetName) {
+		for _, err := range getNotificationsForBudget(ctx, l.awsBudgetClient, &l.config.AccountId, budget.BudgetName) {
 			if err != nil {
-				l.logger.Error("unable to get notification", "error", err)
+				l.Logger.Error("unable to get notification", "error", err)
 				evalStatus = proto.ExecutionStatus_FAILURE
 				accumulatedErrors = errors.Join(accumulatedErrors, err)
 				break
@@ -180,7 +207,7 @@ func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.Api
 
 			// Explicitly reset steps to make things readable
 			processor := policyManager.NewPolicyProcessor(
-				l.logger,
+				l.Logger,
 				policyManager.MergeMaps(
 					labels,
 					map[string]string{
@@ -201,7 +228,7 @@ func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.Api
 		}
 
 		if err = apiHelper.CreateEvidence(ctx, evidences); err != nil {
-			l.logger.Error("Failed to send evidences", "error", err)
+			l.Logger.Error("Failed to send evidences", "error", err)
 			evalStatus = proto.ExecutionStatus_FAILURE
 			accumulatedErrors = errors.Join(accumulatedErrors, err)
 			// We don't stop here, but rather continue to the next instance
@@ -255,8 +282,8 @@ func main() {
 		JSONFormat: true,
 	})
 
-	compliancePluginObj := &CompliancePlugin{
-		logger: logger,
+	compliancePluginObj := &AWSBudgetPlugin{
+		Logger: logger,
 	}
 	// pluginMap is the map of plugins we can dispense.
 	logger.Debug("Initiating AWS Budgets plugin")
