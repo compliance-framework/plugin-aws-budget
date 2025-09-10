@@ -115,7 +115,7 @@ func (l *AWSBudgetPlugin) Configure(req *proto.ConfigureRequest) (*proto.Configu
 
 	awsConfig, err := loadAWSConfig(ctx, pluginConfig)
 	if err != nil {
-		l.Logger.Error("Error loading AWS config!", "error", err)
+		l.Logger.Error("Error loading AWS config", "error", err)
 		return nil, err
 	}
 
@@ -276,7 +276,6 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 				activities,
 			)
 			evidence, err := processor.GenerateResults(ctx, policyPath, budgetMap)
-			l.Logger.Info(fmt.Sprintf("evidence: %v", evidence))
 			evidences = slices.Concat(evidences, evidence)
 			if err != nil {
 				accumulatedErrors = errors.Join(accumulatedErrors, err)
