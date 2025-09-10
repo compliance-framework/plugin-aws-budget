@@ -35,8 +35,6 @@ func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.Api
 	evalStatus := proto.ExecutionStatus_SUCCESS
 	var accumulatedErrors error
 
-	l.logger.Info("Starting eval!")
-
 	activities := make([]*proto.Activity, 0)
 	activities = append(activities, &proto.Activity{
 		Title:       "Collect AWS Budget configurations",
@@ -72,7 +70,6 @@ func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.Api
 
 	// Run policy checks
 	for budget, err := range getBudgets(ctx, budgetsClient, &accountId) {
-		l.logger.Debug(fmt.Sprintf("Found budget: %v", aws.ToString(budget.BudgetName)))
 		if err != nil {
 			l.logger.Error("unable to get budget", "error", err)
 			evalStatus = proto.ExecutionStatus_FAILURE
@@ -96,8 +93,6 @@ func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.Api
 			"provider":    "aws", 
 			"type":        "budget",
 			"budget-name": aws.ToString(budget.BudgetName),
-			"alert-count": fmt.Sprintf("%v", alertCount),
-			"health-status": aws.ToString((*string)(&budget.HealthStatus.Status)),
 		}
 
 		actors := []*proto.OriginActor{
@@ -180,9 +175,6 @@ func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.Api
 		var budgetMap map[string]interface{}
 		_ = json.Unmarshal(b, &budgetMap)
 		budgetMap["AlertCount"] = alertCount
-		l.logger.Debug(fmt.Sprintf("Alert count is %v", alertCount))
-
-		l.logger.Info(fmt.Sprintf("Passing budgetmap: %v", budgetMap))
 
 		for _, policyPath := range request.GetPolicyPaths() {
 
@@ -203,7 +195,6 @@ func (l *CompliancePlugin) Eval(request *proto.EvalRequest, apiHelper runner.Api
 			)
 			evidence, err := processor.GenerateResults(ctx, policyPath, budgetMap)
 			evidences = slices.Concat(evidences, evidence)
-			l.logger.Debug(fmt.Sprintf("Evidences are %v", evidences))
 			if err != nil {
 				accumulatedErrors = errors.Join(accumulatedErrors, err)
 			}
