@@ -119,6 +119,7 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 		labels := map[string]string{
 			"provider":    "aws", 
 			"type":        "budget",
+			"account-id":  l.config.AccountId,
 			"budget-name": aws.ToString(budget.BudgetName),
 		}
 
