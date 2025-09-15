@@ -26,7 +26,7 @@ import (
 type AWSBudgetPlugin struct {
 	Logger hclog.Logger
 
-	config *PluginConfig
+	config          *PluginConfig
 	awsBudgetClient *budgets.Client
 }
 
@@ -34,14 +34,12 @@ type Validator interface {
 	Validate() error
 }
 
-
 type PluginConfig struct {
-	AccountId string `mapstructure:"account_id"`
-	AwsAccessKeyId string `mapstructure:"aws_access_key_id"`
+	AccountId          string `mapstructure:"account_id"`
+	AwsAccessKeyId     string `mapstructure:"aws_access_key_id"`
 	AwsSecretAccessKey string `mapstructure:"aws_secret_access_key"`
-	AwsSessionToken string `mapstructure:"aws_session_token"`
-	AssumeRoleArn string `mapstructure:"assume_role_arn"`
-
+	AwsSessionToken    string `mapstructure:"aws_session_token"`
+	AssumeRoleArn      string `mapstructure:"assume_role_arn"`
 }
 
 func (c *PluginConfig) Validate() error {
@@ -55,14 +53,14 @@ func (c *PluginConfig) Validate() error {
 func loadAWSConfig(ctx context.Context, pluginConfig *PluginConfig) (*aws.Config, error) {
 	var awsConfig aws.Config
 	var err error
-	
+
 	if pluginConfig.AwsAccessKeyId != "" && pluginConfig.AwsSecretAccessKey != "" && pluginConfig.AwsSessionToken != "" {
 		// Use credentials if in config
 		creds := aws.NewCredentialsCache(
-		credentials.NewStaticCredentialsProvider(
-			pluginConfig.AwsAccessKeyId,
-			pluginConfig.AwsSecretAccessKey,
-			pluginConfig.AwsSessionToken,
+			credentials.NewStaticCredentialsProvider(
+				pluginConfig.AwsAccessKeyId,
+				pluginConfig.AwsSecretAccessKey,
+				pluginConfig.AwsSessionToken,
 			),
 		)
 		awsConfig, err = config.LoadDefaultConfig(ctx, config.WithRegion(os.Getenv("AWS_REGION")), config.WithCredentialsProvider(creds))
@@ -97,7 +95,6 @@ func loadAWSConfig(ctx context.Context, pluginConfig *PluginConfig) (*aws.Config
 	}
 	return &awsConfig, nil
 }
-
 
 func (l *AWSBudgetPlugin) Configure(req *proto.ConfigureRequest) (*proto.ConfigureResponse, error) {
 	l.Logger.Info("Configuring AWS Budget Plugin")
@@ -158,20 +155,16 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 			break
 		}
 
-		alertCount := 0
-
-		for _, err := range getNotificationsForBudget(ctx, l.awsBudgetClient, &l.config.AccountId, budget.BudgetName) {
-			if err != nil {
-				l.Logger.Error("unable to get notification", "error", err)
-				evalStatus = proto.ExecutionStatus_FAILURE
-				accumulatedErrors = errors.Join(accumulatedErrors, err)
-				break
-			}
-			alertCount += 1
+		alerts, err := getNotificationsForBudget(ctx, l.awsBudgetClient, &l.config.AccountId, budget.BudgetName)
+		if err != nil {
+			l.Logger.Error("unable to get notifications", "error", err)
+			evalStatus = proto.ExecutionStatus_FAILURE
+			accumulatedErrors = errors.Join(accumulatedErrors, err)
+			break
 		}
 
 		labels := map[string]string{
-			"provider":    "aws", 
+			"provider":    "aws",
 			"type":        "budget",
 			"account-id":  l.config.AccountId,
 			"budget-name": aws.ToString(budget.BudgetName),
@@ -225,11 +218,11 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 						Value: aws.ToString(budget.BillingViewArn),
 					},
 					{
-						Name: "alert-count",
-						Value: fmt.Sprintf("%v", alertCount),
+						Name:  "alert-count",
+						Value: fmt.Sprintf("%v", len(*alerts)),
 					},
 					{
-						Name: "health-status",
+						Name:  "health-status",
 						Value: aws.ToString((*string)(&budget.HealthStatus.Status)),
 					},
 				},
@@ -256,7 +249,9 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 		b, _ := json.Marshal(budget)
 		var budgetMap map[string]interface{}
 		_ = json.Unmarshal(b, &budgetMap)
-		budgetMap["AlertCount"] = alertCount
+		budgetMap["Alerts"] = alerts
+
+		l.Logger.Info(fmt.Sprintf("Alerts: %v", alerts))
 
 		for _, policyPath := range request.GetPolicyPaths() {
 
@@ -276,6 +271,7 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 				activities,
 			)
 			evidence, err := processor.GenerateResults(ctx, policyPath, budgetMap)
+			l.Logger.Info(fmt.Sprintf("Evidence: %v", evidence))
 			evidences = slices.Concat(evidences, evidence)
 			if err != nil {
 				accumulatedErrors = errors.Join(accumulatedErrors, err)
@@ -290,7 +286,6 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 			continue
 		}
 
-		
 	}
 
 	return &proto.EvalResponse{
@@ -314,21 +309,13 @@ func getBudgets(ctx context.Context, client *budgets.Client, accountId *string) 
 	}
 }
 
-func getNotificationsForBudget(ctx context.Context, client *budgets.Client, accountId *string, budgetName *string) iter.Seq2[types.Notification, error] {
-	return func(yield func(types.Notification, error) bool) {
-		result, err := client.DescribeNotificationsForBudget(ctx, &budgets.DescribeNotificationsForBudgetInput{AccountId: accountId, BudgetName: budgetName})
-		if err != nil {
-			yield(types.Notification{}, err)
-			return
-		}
-
-		for _, notification := range result.Notifications {
-			if !yield(notification, nil) {
-				return
-			}
-		}
+func getNotificationsForBudget(ctx context.Context, client *budgets.Client, accountId *string, budgetName *string) (*[]types.Notification, error) {
+	result, err := client.DescribeNotificationsForBudget(ctx, &budgets.DescribeNotificationsForBudgetInput{AccountId: accountId, BudgetName: budgetName})
+	if err != nil {
+		return nil, err
 	}
 
+	return &result.Notifications, nil
 }
 
 func main() {
