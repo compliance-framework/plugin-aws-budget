@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -40,6 +39,11 @@ type PluginConfig struct {
 	AwsSecretAccessKey string `mapstructure:"aws_secret_access_key"`
 	AwsSessionToken    string `mapstructure:"aws_session_token"`
 	AssumeRoleArn      string `mapstructure:"assume_role_arn"`
+}
+
+type SaturatedBudget struct {
+	Budget *types.Budget
+	Alerts *[]types.Notification
 }
 
 func (c *PluginConfig) Validate() error {
@@ -169,7 +173,6 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 			"account-id":  l.config.AccountId,
 			"budget-name": aws.ToString(budget.BudgetName),
 		}
-
 		actors := []*proto.OriginActor{
 			{
 				Title: "The Continuous Compliance Framework",
@@ -246,12 +249,10 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 
 		evidences := make([]*proto.Evidence, 0)
 
-		b, _ := json.Marshal(budget)
-		var budgetMap map[string]interface{}
-		_ = json.Unmarshal(b, &budgetMap)
-		budgetMap["Alerts"] = alerts
-
-		l.Logger.Info(fmt.Sprintf("Alerts: %v", alerts))
+		data := &SaturatedBudget{
+			Budget: &budget,
+			Alerts: alerts,
+		}
 
 		for _, policyPath := range request.GetPolicyPaths() {
 
@@ -270,7 +271,7 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 				actors,
 				activities,
 			)
-			evidence, err := processor.GenerateResults(ctx, policyPath, budgetMap)
+			evidence, err := processor.GenerateResults(ctx, policyPath, data)
 			l.Logger.Info(fmt.Sprintf("Evidence: %v", evidence))
 			evidences = slices.Concat(evidences, evidence)
 			if err != nil {
