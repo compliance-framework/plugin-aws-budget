@@ -272,7 +272,6 @@ func (l *AWSBudgetPlugin) Eval(request *proto.EvalRequest, apiHelper runner.ApiH
 				activities,
 			)
 			evidence, err := processor.GenerateResults(ctx, policyPath, data)
-			l.Logger.Info(fmt.Sprintf("Evidence: %v", evidence))
 			evidences = slices.Concat(evidences, evidence)
 			if err != nil {
 				accumulatedErrors = errors.Join(accumulatedErrors, err)
